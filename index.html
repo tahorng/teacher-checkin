@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>老師點名</title>
+<style>
+  body { font-family: -apple-system, "Microsoft JhengHei", sans-serif; background:#f4f6f8; margin:0; padding:16px; color:#2c3e50; }
+  h2 { margin: 8px 0 4px; }
+  .sub { color:#7f8c8d; font-size:13px; margin-bottom:16px; }
+  .lesson-card { background:#fff; border-radius:10px; padding:14px 16px; margin-bottom:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  .school-tag { font-size:12px; color:#3498db; font-weight:bold; }
+  .lesson-time { font-size:13px; color:#7f8c8d; }
+  .lesson-info { font-size:17px; margin:4px 0 10px; font-weight:bold; }
+  .lesson-info .course { font-size:13px; color:#7f8c8d; font-weight:normal; }
+  .btn { display:inline-block; padding:9px 18px; border-radius:6px; text-decoration:none; font-weight:bold; color:#fff; border:none; font-size:14px; cursor:pointer; }
+  .btn-in { background:#27ae60; }
+  .btn-out { background:#e67e22; }
+  .btn-scan { background:#3498db; margin-left:8px; }
+  .tag { font-size:13px; color:#7f8c8d; margin-right:8px; }
+  .tag.done { color:#27ae60; font-weight:bold; }
+  .tag.late { color:#e74c3c; font-weight:bold; }
+  .empty { text-align:center; color:#bbb; padding:40px 0; }
+  .error-box { text-align:center; padding:60px 20px; color:#c0392b; }
+  .msg { padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
+  .msg.ok { background:#eafaf1; border:1px solid #a3e4c1; color:#1a7a4c; }
+  .msg.error { background:#fdecea; border:1px solid #f5b7b1; color:#a93226; }
+  #scanResult { font-size:13px; color:#7f8c8d; margin-top:8px; text-align:center; }
+  .loading { text-align:center; color:#999; padding:40px 0; }
+</style>
+</head>
+<body>
+<div id="app"><p class="loading">載入中...</p></div>
+<div id="scanResult"></div>
+
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-checkin-web';
+const LIFF_ID = '2010807019-E5WKheIq';
+let TOKEN = null;
+
+// 從網址取出 token。LIFF 開啟時，參數有時會先包在 liff.state 裡，兩種情況都要處理
+function getTokenFromUrl() {
+    const p = new URLSearchParams(location.search);
+    let t = p.get('token');
+    if (!t && p.get('liff.state')) {
+        const st = new URLSearchParams(p.get('liff.state').replace(/^\?/, ''));
+        t = st.get('token');
+    }
+    return t;
+}
+
+function showError(title, text) {
+    document.getElementById('app').innerHTML =
+        '<div class="error-box"><h2>' + title + '</h2><p>' + text + '</p></div>';
+}
+
+function fmtTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function render(data, actionResult) {
+    let html = '<h2>👋 今天的到府課程</h2>';
+
+    if (actionResult) {
+        const isOk = actionResult.indexOf('ok:') === 0;
+        const text = actionResult.replace(/^(ok:|error:)/, '');
+        html += '<div class="msg ' + (isOk ? 'ok' : 'error') + '">' + text + '</div>';
+    }
+
+    html += '<p class="sub">點「掃碼簽到」可以直接掃學生的 QR 碼，或手動簽到</p>';
+
+    if (!data.lessons || data.lessons.length === 0) {
+        html += '<p class="empty">今天沒有外派到府課程</p>';
+    } else {
+        data.lessons.forEach(function(l) {
+            let statusHtml = '';
+            if (!l.checked_in_at) {
+                statusHtml =
+                    '<button class="btn btn-in" onclick="doAction(\'checkin\', ' + l.id + ', ' + l.customer_id + ')">手動簽到</button>' +
+                    '<button class="btn btn-scan" onclick="openScanner(' + l.id + ', ' + l.customer_id + ', ' + l.student_id + ')">📷 掃碼簽到</button>';
+            } else if (!l.checked_out_at) {
+                const inTime = new Date(l.checked_in_at);
+                const start = new Date(l.start_time);
+                const lateMinutes = Math.round((inTime.getTime() - start.getTime()) / 60000);
+                const lateTag = lateMinutes > 10 ? '<span class="tag late">⚠️ 遲到 ' + lateMinutes + ' 分</span>' : '';
+                statusHtml =
+                    '<span class="tag">已簽到 ' + fmtTime(l.checked_in_at) + '</span>' + lateTag +
+                    '<button class="btn btn-out" onclick="doAction(\'checkout\', ' + l.id + ', ' + l.customer_id + ')">簽退</button>';
+            } else {
+                statusHtml = '<span class="tag done">✅ 已完成點名</span>';
+            }
+
+            html +=
+                '<div class="lesson-card">' +
+                '<div class="school-tag">' + l.school_name + '</div>' +
+                '<div class="lesson-time">' + fmtTime(l.start_time) + '</div>' +
+                '<div class="lesson-info">' + l.student_name + '　<span class="course">' + l.course_name + '</span></div>' +
+                '<div>' + statusHtml + '</div>' +
+                '</div>';
+        });
+    }
+
+    document.getElementById('app').innerHTML = html;
+}
+
+async function refresh(actionResult) {
+    try {
+        const res = await fetch(API + '?token=' + encodeURIComponent(TOKEN));
+        const data = await res.json();
+        if (!data.success) {
+            showError('連結已失效', data.message || '請回到 LINE 重新點選「簽到/簽退」取得新連結。');
+            return;
+        }
+        render(data, actionResult);
+    } catch (e) {
+        showError('載入失敗', '網路連線異常，請稍後再試。');
+    }
+}
+
+async function doAction(action, lessonId, customerId) {
+    document.getElementById('scanResult').innerText = '';
+    try {
+        const res = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: TOKEN, action: action, lesson: lessonId, customer: customerId })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showError('連結已失效', data.message || '請回到 LINE 重新點選「簽到/簽退」取得新連結。');
+            return;
+        }
+        render(data, data.actionResult);
+    } catch (e) {
+        showError('操作失敗', '網路連線異常，請稍後再試。');
+    }
+}
+
+function openScanner(lessonId, customerId, expectedStudentId) {
+    const resultEl = document.getElementById('scanResult');
+
+    if (!window.liff || !liff.isApiAvailable || !liff.isApiAvailable('scanCodeV2')) {
+        resultEl.innerText = '目前環境無法使用掃描功能，請改用手動簽到（掃碼需要從 LINE 裡開啟）。';
+        return;
+    }
+
+    resultEl.innerText = '請對準學生的 QR 碼...';
+    liff.scanCodeV2().then(function(result) {
+        const value = result && result.value;
+        if (!value) {
+            resultEl.innerText = '沒有掃描到內容，請再試一次。';
+            return;
+        }
+        const match = value.match(/^DH-CKIN-(\d+)$/);
+        if (match && match[1] === String(expectedStudentId)) {
+            resultEl.innerText = '';
+            doAction('checkin', lessonId, customerId);
+        } else if (match) {
+            resultEl.innerText = '⚠️ 這不是這堂課學生的 QR 碼，請確認掃對人。';
+        } else {
+            resultEl.innerText = '⚠️ 掃到的不是有效的報到 QR 碼。';
+        }
+    }).catch(function(err) {
+        resultEl.innerText = '掃描已取消或發生錯誤：' + (err && err.message ? err.message : '');
+    });
+}
+
+async function boot() {
+    try {
+        await liff.init({ liffId: LIFF_ID });
+    } catch (e) {
+        // 在一般瀏覽器（非 LINE）開啟時 liff 初始化可能失敗，不影響看課表跟手動簽到，只有掃碼不能用
+        console.error('LIFF 初始化失敗', e);
+    }
+    TOKEN = getTokenFromUrl();
+    if (!TOKEN) {
+        showError('連結錯誤', '缺少存取憑證，請回到 LINE 重新點選「簽到/簽退」取得新連結。');
+        return;
+    }
+    refresh();
+}
+
+boot();
+</script>
+</body>
+</html>
