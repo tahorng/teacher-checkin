@@ -17,9 +17,11 @@
   .btn-in { background:#27ae60; }
   .btn-out { background:#e67e22; }
   .btn-scan { background:#3498db; margin-left:8px; }
+  .btn-cancel { background:#95a5a6; padding:6px 14px; font-size:12px; }
   .tag { font-size:13px; color:#7f8c8d; margin-right:8px; }
   .tag.done { color:#27ae60; font-weight:bold; }
   .tag.late { color:#e74c3c; font-weight:bold; }
+  .tag.expired { display:inline-block; color:#c0392b; font-size:12px; }
   .empty { text-align:center; color:#bbb; padding:40px 0; }
   .error-box { text-align:center; padding:60px 20px; color:#c0392b; }
   .msg { padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
@@ -37,7 +39,9 @@
 <script>
 const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-checkin-web';
 const LIFF_ID = '2010807019-E5WKheIq';
+const CANCEL_WINDOW_MS = 10 * 60 * 1000; // 老師自行取消簽到/簽退的時間窗口，要跟後端 CANCEL_WINDOW_MINUTES 保持一致
 let TOKEN = null;
+let lastData = null; // 供倒數逾時後自動重畫畫面用，不用等使用者手動操作
 
 // 從網址取出 token。LIFF 開啟時，參數有時會先包在 liff.state 裡，兩種情況都要處理
 function getTokenFromUrl() {
@@ -58,6 +62,22 @@ function showError(title, text) {
 function fmtTime(iso) {
     const d = new Date(iso);
     return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+// 在時間窗口內顯示「取消重來」按鈕，超過就顯示提示文字改請教室處理
+// 實際能不能取消是後端說了算，這裡只是先幫老師判斷要不要顯示按鈕，避免點了才被拒絕
+function cancelControlHtml(action, l, sinceTime, label, confirmMsg) {
+    const remain = CANCEL_WINDOW_MS - (Date.now() - sinceTime.getTime());
+    if (remain > 0) {
+        return '<button class="btn btn-cancel" onclick="confirmCancel(\'' + action + '\', ' + l.id + ', ' + l.customer_id + ', \'' + confirmMsg + '\')">' + label + '</button>';
+    }
+    return '<span class="tag expired">已超過可自行取消時間，請與教室聯繫</span>';
+}
+
+function confirmCancel(action, lessonId, customerId, msg) {
+    if (window.confirm(msg)) {
+        doAction(action, lessonId, customerId);
+    }
 }
 
 function render(data, actionResult) {
@@ -85,11 +105,15 @@ function render(data, actionResult) {
                 const start = new Date(l.start_time);
                 const lateMinutes = Math.round((inTime.getTime() - start.getTime()) / 60000);
                 const lateTag = lateMinutes > 10 ? '<span class="tag late">⚠️ 遲到 ' + lateMinutes + ' 分</span>' : '';
+                const cancelHtml = cancelControlHtml('cancel_checkin', l, inTime, '取消簽到重來', '確定要取消這次簽到，重新來過嗎？');
                 statusHtml =
                     '<span class="tag">已簽到 ' + fmtTime(l.checked_in_at) + '</span>' + lateTag +
-                    '<button class="btn btn-out" onclick="doAction(\'checkout\', ' + l.id + ', ' + l.customer_id + ')">簽退</button>';
+                    '<button class="btn btn-out" onclick="doAction(\'checkout\', ' + l.id + ', ' + l.customer_id + ')">簽退</button>' +
+                    '<div style="margin-top:6px;">' + cancelHtml + '</div>';
             } else {
-                statusHtml = '<span class="tag done">✅ 已完成點名</span>';
+                const outTime = new Date(l.checked_out_at);
+                const cancelHtml = cancelControlHtml('cancel_checkout', l, outTime, '取消簽退重來', '確定要取消這次簽退，重新來過嗎？');
+                statusHtml = '<span class="tag done">✅ 已完成點名</span><div style="margin-top:6px;">' + cancelHtml + '</div>';
             }
 
             html +=
@@ -113,6 +137,7 @@ async function refresh(actionResult) {
             showError('連結已失效', data.message || '請回到 LINE 重新點選「簽到/簽退」取得新連結。');
             return;
         }
+        lastData = data;
         render(data, actionResult);
     } catch (e) {
         showError('載入失敗', '網路連線異常，請稍後再試。');
@@ -132,11 +157,17 @@ async function doAction(action, lessonId, customerId) {
             showError('連結已失效', data.message || '請回到 LINE 重新點選「簽到/簽退」取得新連結。');
             return;
         }
+        lastData = data;
         render(data, data.actionResult);
     } catch (e) {
         showError('操作失敗', '網路連線異常，請稍後再試。');
     }
 }
+
+// 每 20 秒重畫一次現有資料（不重新打 API），讓「取消重來」按鈕的 10 分鐘倒數到了會自動變成過期提示
+setInterval(function() {
+    if (lastData) render(lastData);
+}, 20000);
 
 function openScanner(lessonId, customerId, expectedStudentId) {
     const resultEl = document.getElementById('scanResult');
