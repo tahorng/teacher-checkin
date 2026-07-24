@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>家長 LINE 綁定</title>
+<style>
+  body { font-family: -apple-system, "Microsoft JhengHei", sans-serif; background:#f4f6f8; margin:0; padding:20px; color:#2c3e50; }
+  .card { background:#fff; border-radius:12px; padding:24px 20px; margin-top:20px; box-shadow:0 1px 4px rgba(0,0,0,0.08); text-align:center; }
+  h2 { margin:8px 0 16px; }
+  .student-name { font-size:22px; font-weight:bold; color:#2c3e50; margin:10px 0 20px; }
+  .desc { color:#7f8c8d; font-size:14px; margin-bottom:20px; line-height:1.6; }
+  .btn { display:inline-block; padding:12px 28px; border-radius:8px; text-decoration:none; font-weight:bold; color:#fff; border:none; font-size:16px; cursor:pointer; background:#00B900; }
+  .btn:disabled { background:#bbb; }
+  .msg { padding:12px 14px; border-radius:8px; font-size:14px; margin-top:16px; text-align:left; }
+  .msg.ok { background:#eafaf1; border:1px solid #a3e4c1; color:#1a7a4c; }
+  .msg.error { background:#fdecea; border:1px solid #f5b7b1; color:#a93226; }
+  .loading { text-align:center; color:#999; padding:40px 0; }
+  .error-box { text-align:center; padding:60px 20px; color:#c0392b; }
+</style>
+</head>
+<body>
+<div id="app"><p class="loading">載入中...</p></div>
+
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/parent-line-bind';
+const LIFF_ID = '2009239047-b6i80Rpj';
+let STUDENT_ID = null;
+
+function getSidFromUrl() {
+    const p = new URLSearchParams(location.search);
+    let sid = p.get('sid');
+    if (!sid && p.get('liff.state')) {
+        const st = new URLSearchParams(p.get('liff.state').replace(/^\?/, ''));
+        sid = st.get('sid');
+    }
+    return sid;
+}
+
+function showError(title, text) {
+    document.getElementById('app').innerHTML =
+        '<div class="error-box"><h2>' + title + '</h2><p>' + text + '</p></div>';
+}
+
+function renderConfirm(studentName, alreadyBound) {
+    let html = '<div class="card">';
+    html += '<h2>👋 LINE 帳號綁定</h2>';
+    html += '<div class="desc">綁定後，教室會透過這個 LINE 帳號傳送出席通知、繳費提醒等訊息</div>';
+    html += '<div class="student-name">' + studentName + '</div>';
+    if (alreadyBound) {
+        html += '<div class="msg ok">✅ 這個 LINE 帳號已經綁定過了，不用重複操作</div>';
+    } else {
+        html += '<button class="btn" id="bindBtn" onclick="doBind()">確認綁定</button>';
+    }
+    html += '<div id="resultMsg"></div>';
+    html += '</div>';
+    document.getElementById('app').innerHTML = html;
+}
+
+async function loadPreview() {
+    try {
+        const res = await fetch(API + '?sid=' + encodeURIComponent(STUDENT_ID));
+        const data = await res.json();
+        if (!data.success) {
+            showError('連結錯誤', data.message || '請跟教室確認連結是否正確。');
+            return;
+        }
+        renderConfirm(data.studentName, data.alreadyBound);
+    } catch (e) {
+        showError('載入失敗', '網路連線異常，請稍後再試。');
+    }
+}
+
+async function doBind() {
+    const btn = document.getElementById('bindBtn');
+    const resultEl = document.getElementById('resultMsg');
+    if (btn) { btn.disabled = true; btn.innerText = '處理中...'; }
+
+    if (!window.liff || !liff.isLoggedIn || !liff.isLoggedIn()) {
+        resultEl.innerHTML = '<div class="msg error">尚未完成 LINE 登入，請從 LINE 裡面點選連結進入這個頁面（不要用一般瀏覽器打開）。</div>';
+        if (btn) { btn.disabled = false; btn.innerText = '確認綁定'; }
+        return;
+    }
+
+    try {
+        const idToken = liff.getIDToken();
+        if (!idToken) {
+            resultEl.innerHTML = '<div class="msg error">無法取得 LINE 身份憑證，請重新從 LINE 點選連結進入。</div>';
+            if (btn) { btn.disabled = false; btn.innerText = '確認綁定'; }
+            return;
+        }
+
+        const res = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ studentId: STUDENT_ID, idToken: idToken })
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            resultEl.innerHTML = '<div class="msg error">' + (data.message || '綁定失敗，請稍後再試。') + '</div>';
+            if (btn) { btn.disabled = false; btn.innerText = '確認綁定'; }
+            return;
+        }
+
+        resultEl.innerHTML = '<div class="msg ok">✅ 綁定成功！之後教室的出席通知、繳費提醒都會傳到這個 LINE 帳號</div>';
+        if (btn) btn.style.display = 'none';
+    } catch (e) {
+        resultEl.innerHTML = '<div class="msg error">網路連線異常，請稍後再試。</div>';
+        if (btn) { btn.disabled = false; btn.innerText = '確認綁定'; }
+    }
+}
+
+async function boot() {
+    try {
+        await liff.init({ liffId: LIFF_ID });
+        if (!liff.isLoggedIn()) {
+            liff.login(); // 尚未登入就導去登入，登入完成後 LINE 會帶回同一個頁面
+            return;
+        }
+    } catch (e) {
+        console.error('LIFF 初始化失敗', e);
+        showError('載入失敗', '請從 LINE 裡面點選連結進入這個頁面（不要用一般瀏覽器打開）。');
+        return;
+    }
+    STUDENT_ID = getSidFromUrl();
+    if (!STUDENT_ID) {
+        showError('連結錯誤', '缺少學生代碼，請回到教室重新取得連結。');
+        return;
+    }
+    loadPreview();
+}
+
+boot();
+</script>
+</body>
+</html>
