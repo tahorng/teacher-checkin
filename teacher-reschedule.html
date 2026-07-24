@@ -39,6 +39,7 @@ const LIFF_ID = '2010807019-pgVR7Tfd';
 let TOKEN = null;
 let LESSONS = [];
 let PICKED = null;
+let PENDING_SUBMIT = null; // 記住上一次送出的內容，教室衝突時選了替代教室要用同一組時間重送
 
 function getTokenFromUrl() {
     const p = new URLSearchParams(location.search);
@@ -97,6 +98,7 @@ function renderList() {
 
 function pickLesson(idx) {
     PICKED = LESSONS[idx];
+    PENDING_SUBMIT = null;
     const durationMs = new Date(PICKED.end_time).getTime() - new Date(PICKED.start_time).getTime();
 
     let html = '<button class="btn btn-back" onclick="backToList()">← 返回列表</button>';
@@ -114,45 +116,81 @@ function pickLesson(idx) {
 
 function backToList() {
     PICKED = null;
+    PENDING_SUBMIT = null;
     renderList();
 }
 
-async function doReschedule(durationMs) {
+async function doReschedule(durationMs, classroomId) {
     const btn = document.getElementById('confirmBtn');
     const resultEl = document.getElementById('resultMsg');
-    const newStartRaw = document.getElementById('newStartInput').value;
-    if (!newStartRaw) {
-        resultEl.innerHTML = '<div class="msg error">請選擇新的上課時間</div>';
-        return;
-    }
-    const newStart = new Date(newStartRaw);
-    const newEnd = new Date(newStart.getTime() + durationMs);
 
-    btn.disabled = true; btn.innerText = '處理中...';
+    let newStart, newEnd;
+    if (PENDING_SUBMIT) {
+        // 教室衝突後重選教室送出，時間沿用第一次的選擇，不用使用者重新選一次時間
+        newStart = PENDING_SUBMIT.newStart;
+        newEnd = PENDING_SUBMIT.newEnd;
+    } else {
+        const newStartRaw = document.getElementById('newStartInput').value;
+        if (!newStartRaw) {
+            resultEl.innerHTML = '<div class="msg error">請選擇新的上課時間</div>';
+            return;
+        }
+        newStart = new Date(newStartRaw);
+        newEnd = new Date(newStart.getTime() + durationMs);
+        PENDING_SUBMIT = { newStart, newEnd };
+    }
+
+    if (btn) { btn.disabled = true; btn.innerText = '處理中...'; }
     try {
+        const payload = {
+            token: TOKEN,
+            lessonId: PICKED.id,
+            newStartTime: toNaiveLocalString(newStart),
+            newEndTime: toNaiveLocalString(newEnd)
+        };
+        if (classroomId) payload.classroomId = classroomId;
+
         const res = await fetch(API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                token: TOKEN,
-                lessonId: PICKED.id,
-                newStartTime: toNaiveLocalString(newStart),
-                newEndTime: toNaiveLocalString(newEnd)
-            })
+            body: JSON.stringify(payload)
         });
         const data = await res.json();
+
         if (!data.success) {
+            if (data.needsClassroomChoice) {
+                renderClassroomChoice(data.message, data.alternativeClassrooms || [], durationMs);
+                return;
+            }
             resultEl.innerHTML = '<div class="msg error">' + (data.message || '調整失敗，請稍後再試。') + '</div>';
-            btn.disabled = false; btn.innerText = '確認調整';
+            if (btn) { btn.disabled = false; btn.innerText = '確認調整'; }
+            PENDING_SUBMIT = null;
             return;
         }
         resultEl.innerHTML = '<div class="msg ok">✅ 調課成功！</div>';
-        btn.style.display = 'none';
+        if (btn) btn.style.display = 'none';
+        PENDING_SUBMIT = null;
         setTimeout(function() { loadLessons(); }, 1200);
     } catch (e) {
         resultEl.innerHTML = '<div class="msg error">網路連線異常，請稍後再試。</div>';
-        btn.disabled = false; btn.innerText = '確認調整';
+        if (btn) { btn.disabled = false; btn.innerText = '確認調整'; }
     }
+}
+
+function renderClassroomChoice(message, alternatives, durationMs) {
+    let html = '<button class="btn btn-back" onclick="backToList()">← 返回列表</button>';
+    html += '<div class="picked-summary">';
+    html += '<div class="msg error">' + message + '</div>';
+    if (alternatives.length === 0) {
+        html += '<p style="color:#7f8c8d; font-size:13px;">請返回列表，重新選擇別的時間。</p>';
+    } else {
+        html += '<p style="font-size:13px; color:#7f8c8d; margin-bottom:8px;">選擇要換到哪間教室：</p>';
+        alternatives.forEach(function(room) {
+            html += '<button class="btn btn-adjust" style="display:block; width:100%; margin-bottom:8px; box-sizing:border-box;" onclick="doReschedule(' + durationMs + ', ' + room.id + ')">' + room.name + '</button>';
+        });
+    }
+    html += '</div>';
+    document.getElementById('app').innerHTML = html;
 }
 
 async function loadLessons() {
