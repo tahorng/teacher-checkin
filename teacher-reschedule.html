@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>老師調課</title>
+<style>
+  body { font-family: -apple-system, "Microsoft JhengHei", sans-serif; background:#f4f6f8; margin:0; padding:16px; color:#2c3e50; }
+  h2 { margin: 8px 0 4px; }
+  .sub { color:#7f8c8d; font-size:13px; margin-bottom:16px; }
+  .lesson-card { background:#fff; border-radius:10px; padding:14px 16px; margin-bottom:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  .school-tag { font-size:12px; color:#3498db; font-weight:bold; }
+  .lesson-time { font-size:14px; color:#2c3e50; font-weight:bold; margin-top:2px; }
+  .lesson-info { font-size:15px; margin:4px 0 10px; }
+  .lesson-info .course { font-size:13px; color:#7f8c8d; }
+  .btn { display:inline-block; padding:9px 18px; border-radius:6px; text-decoration:none; font-weight:bold; color:#fff; border:none; font-size:14px; cursor:pointer; }
+  .btn-adjust { background:#3498db; }
+  .btn-back { background:#95a5a6; margin-bottom:14px; }
+  .btn-confirm { background:#27ae60; width:100%; margin-top:16px; padding:12px; font-size:16px; }
+  .empty { text-align:center; color:#bbb; padding:40px 0; }
+  .error-box { text-align:center; padding:60px 20px; color:#c0392b; }
+  .msg { padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
+  .msg.ok { background:#eafaf1; border:1px solid #a3e4c1; color:#1a7a4c; }
+  .msg.error { background:#fdecea; border:1px solid #f5b7b1; color:#a93226; }
+  .loading { text-align:center; color:#999; padding:40px 0; }
+  .form-row { margin-bottom:14px; }
+  .form-row label { display:block; font-size:13px; color:#7f8c8d; margin-bottom:5px; }
+  .form-row input { width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:15px; box-sizing:border-box; }
+  .picked-summary { background:#fff; border-radius:10px; padding:14px 16px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+</style>
+</head>
+<body>
+<div id="app"><p class="loading">載入中...</p></div>
+
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-reschedule';
+const LIFF_ID = '2010807019-pgVR7Tfd';
+let TOKEN = null;
+let LESSONS = [];
+let PICKED = null;
+
+function getTokenFromUrl() {
+    const p = new URLSearchParams(location.search);
+    let t = p.get('token');
+    if (!t && p.get('liff.state')) {
+        const st = new URLSearchParams(p.get('liff.state').replace(/^\?/, ''));
+        t = st.get('token');
+    }
+    return t;
+}
+
+function showError(title, text) {
+    document.getElementById('app').innerHTML =
+        '<div class="error-box"><h2>' + title + '</h2><p>' + text + '</p></div>';
+}
+
+function fmtDateTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric', weekday: 'short' }) + ' ' +
+           d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+// datetime-local 輸入框需要的格式（本地時間，不是 UTC）
+function toDatetimeLocalValue(iso) {
+    const d = new Date(iso);
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function renderList() {
+    let html = '<h2>🗓️ 調整上課時間</h2>';
+    html += '<p class="sub">只列出您未來 60 天內的一對一／外派課程，團體班請直接聯繫教室協調</p>';
+
+    if (LESSONS.length === 0) {
+        html += '<p class="empty">目前沒有可以自行調整的課程</p>';
+    } else {
+        LESSONS.forEach(function(l, idx) {
+            html +=
+                '<div class="lesson-card">' +
+                '<div class="school-tag">' + l.school_name + '</div>' +
+                '<div class="lesson-time">' + fmtDateTime(l.start_time) + '</div>' +
+                '<div class="lesson-info">' + l.student_name + '　<span class="course">' + l.course_name + '</span></div>' +
+                '<button class="btn btn-adjust" onclick="pickLesson(' + idx + ')">調整這堂課</button>' +
+                '</div>';
+        });
+    }
+    document.getElementById('app').innerHTML = html;
+}
+
+function pickLesson(idx) {
+    PICKED = LESSONS[idx];
+    const durationMs = new Date(PICKED.end_time).getTime() - new Date(PICKED.start_time).getTime();
+
+    let html = '<button class="btn btn-back" onclick="backToList()">← 返回列表</button>';
+    html += '<div class="picked-summary">';
+    html += '<div class="school-tag">' + PICKED.school_name + '</div>';
+    html += '<div class="lesson-info" style="margin-top:6px;">' + PICKED.student_name + '　<span class="course">' + PICKED.course_name + '</span></div>';
+    html += '<div style="font-size:13px; color:#7f8c8d;">原時間：' + fmtDateTime(PICKED.start_time) + '</div>';
+    html += '</div>';
+    html += '<div class="form-row"><label>新的上課時間</label><input type="datetime-local" id="newStartInput" value="' + toDatetimeLocalValue(PICKED.start_time) + '"></div>';
+    html += '<div id="resultMsg"></div>';
+    html += '<button class="btn btn-confirm" id="confirmBtn" onclick="doReschedule(' + durationMs + ')">確認調整</button>';
+
+    document.getElementById('app').innerHTML = html;
+}
+
+function backToList() {
+    PICKED = null;
+    renderList();
+}
+
+async function doReschedule(durationMs) {
+    const btn = document.getElementById('confirmBtn');
+    const resultEl = document.getElementById('resultMsg');
+    const newStartRaw = document.getElementById('newStartInput').value;
+    if (!newStartRaw) {
+        resultEl.innerHTML = '<div class="msg error">請選擇新的上課時間</div>';
+        return;
+    }
+    const newStart = new Date(newStartRaw);
+    const newEnd = new Date(newStart.getTime() + durationMs);
+
+    btn.disabled = true; btn.innerText = '處理中...';
+    try {
+        const res = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                token: TOKEN,
+                lessonId: PICKED.id,
+                newStartTime: newStart.toISOString(),
+                newEndTime: newEnd.toISOString()
+            })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            resultEl.innerHTML = '<div class="msg error">' + (data.message || '調整失敗，請稍後再試。') + '</div>';
+            btn.disabled = false; btn.innerText = '確認調整';
+            return;
+        }
+        resultEl.innerHTML = '<div class="msg ok">✅ 調課成功！</div>';
+        btn.style.display = 'none';
+        setTimeout(function() { loadLessons(); }, 1200);
+    } catch (e) {
+        resultEl.innerHTML = '<div class="msg error">網路連線異常，請稍後再試。</div>';
+        btn.disabled = false; btn.innerText = '確認調整';
+    }
+}
+
+async function loadLessons() {
+    try {
+        const res = await fetch(API + '?token=' + encodeURIComponent(TOKEN));
+        const data = await res.json();
+        if (!data.success) {
+            showError('連結已失效', data.message || '請回到 LINE 重新點選「調課」取得新連結。');
+            return;
+        }
+        if (data.enabled === false) {
+            showError('功能尚未開放', '教室目前沒有開放老師自行調課，如需調整上課時間請直接聯繫教室。');
+            return;
+        }
+        LESSONS = data.lessons || [];
+        renderList();
+    } catch (e) {
+        showError('載入失敗', '網路連線異常，請稍後再試。');
+    }
+}
+
+async function boot() {
+    try {
+        await liff.init({ liffId: LIFF_ID });
+    } catch (e) {
+        console.error('LIFF 初始化失敗', e);
+    }
+    TOKEN = getTokenFromUrl();
+    if (!TOKEN) {
+        showError('連結錯誤', '缺少存取憑證，請回到 LINE 重新點選「調課」取得新連結。');
+        return;
+    }
+    loadLessons();
+}
+
+boot();
+</script>
+</body>
+</html>
