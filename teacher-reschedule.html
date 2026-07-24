@@ -68,6 +68,13 @@ function toDatetimeLocalValue(iso) {
     return new Date(d.getTime() - offset).toISOString().slice(0, 16);
 }
 
+// 送給後端的格式：跟教室桌面 App 送出的格式一致——直接是「看起來像本地時間」的字串，不帶時區標記，
+// 不能用 toISOString() 直接轉（那樣會轉成真正的 UTC，跟系統其他地方的存法不一致，時間會整個跑掉）
+function toNaiveLocalString(d) {
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().slice(0, 19);
+}
+
 function renderList() {
     let html = '<h2>🗓️ 調整上課時間</h2>';
     html += '<p class="sub">只列出您未來 60 天內的一對一／外派課程，團體班請直接聯繫教室協調</p>';
@@ -129,8 +136,8 @@ async function doReschedule(durationMs) {
             body: JSON.stringify({
                 token: TOKEN,
                 lessonId: PICKED.id,
-                newStartTime: newStart.toISOString(),
-                newEndTime: newEnd.toISOString()
+                newStartTime: toNaiveLocalString(newStart),
+                newEndTime: toNaiveLocalString(newEnd)
             })
         });
         const data = await res.json();
