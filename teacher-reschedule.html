@@ -132,7 +132,7 @@ async function doReschedule(durationMs, classroomId) {
     } else {
         const newStartRaw = document.getElementById('newStartInput').value;
         if (!newStartRaw) {
-            resultEl.innerHTML = '<div class="msg error">請選擇新的上課時間</div>';
+            if (resultEl) resultEl.innerHTML = '<div class="msg error">請選擇新的上課時間</div>';
             return;
         }
         newStart = new Date(newStartRaw);
@@ -141,6 +141,7 @@ async function doReschedule(durationMs, classroomId) {
     }
 
     if (btn) { btn.disabled = true; btn.innerText = '處理中...'; }
+    if (resultEl) resultEl.innerHTML = '<p style="text-align:center; color:#999; font-size:13px;">處理中...</p>';
     try {
         const payload = {
             token: TOKEN,
@@ -162,17 +163,17 @@ async function doReschedule(durationMs, classroomId) {
                 renderClassroomChoice(data.message, data.alternativeClassrooms || [], durationMs);
                 return;
             }
-            resultEl.innerHTML = '<div class="msg error">' + (data.message || '調整失敗，請稍後再試。') + '</div>';
+            if (resultEl) resultEl.innerHTML = '<div class="msg error">' + (data.message || '調整失敗，請稍後再試。') + '</div>';
             if (btn) { btn.disabled = false; btn.innerText = '確認調整'; }
             PENDING_SUBMIT = null;
             return;
         }
-        resultEl.innerHTML = '<div class="msg ok">✅ 調課成功！</div>';
+        if (resultEl) resultEl.innerHTML = '<div class="msg ok">✅ 調課成功！</div>';
         if (btn) btn.style.display = 'none';
         PENDING_SUBMIT = null;
         setTimeout(function() { loadLessons(); }, 1200);
     } catch (e) {
-        resultEl.innerHTML = '<div class="msg error">網路連線異常，請稍後再試。</div>';
+        if (resultEl) resultEl.innerHTML = '<div class="msg error">網路連線異常，請稍後再試。</div>';
         if (btn) { btn.disabled = false; btn.innerText = '確認調整'; }
     }
 }
@@ -190,6 +191,7 @@ function renderClassroomChoice(message, alternatives, durationMs) {
         });
     }
     html += '</div>';
+    html += '<div id="resultMsg"></div>'; // 這裡原本漏掉了，導致選了教室之後結果訊息沒地方顯示，看起來像沒反應
     document.getElementById('app').innerHTML = html;
 }
 
