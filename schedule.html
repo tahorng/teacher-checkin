@@ -234,13 +234,39 @@ window.openReschedule = function(lessonJson) {
        + '<div style="flex:1;"><label class="f">日期</label><input type="date" id="rsDate" value="' + esc(l.start_time.slice(0,10)) + '" onchange="rsOnDateChange()"></div>'
        + '<div style="flex:1;"><label class="f">開始</label><input type="time" id="rsTime" step="300" value="' + esc(l.start_time.slice(11,16)) + '" onchange="drawRsGrid()"></div>'
        + '</div>';
+    // 外派到府沒有教室，就不出現這一欄
+    if (l.classroom_id) {
+        h += '<label class="f">教室</label><select id="rsRoom" onchange="rsLoadWeek()"><option value="' + l.classroom_id + '">' + esc(l.classroom_name || '原教室') + '</option></select>';
+    }
     h += '<div id="rsMsg"></div>';
     h += '<div style="margin-top:18px; display:flex; gap:8px;">'
        + '<button class="btn btn-grey" onclick="backToWeek()">返回</button>'
        + '<button class="btn btn-primary" id="rsSubmit" style="flex:1;" onclick="doReschedule()">確認調整</button>'
        + '</div>';
     document.getElementById('app').innerHTML = h;
+    rsLoadRooms();
     rsLoadWeek();
+};
+
+// 同一分校的其他教室，讓老師發現時段被佔用時可以當場換一間，
+// 不用等送出被擋才知道
+window.rsLoadRooms = async function() {
+    const sel = document.getElementById('rsRoom');
+    if (!sel || !RS_PICKED) return;
+    try {
+        const res = await fetch(API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: TOKEN, action: 'rooms', customer: RS_PICKED.customer_id })
+        });
+        const data = await res.json();
+        let rooms = data.rooms || [];
+        if (RS_PICKED.branch) rooms = rooms.filter(r => r.branch === RS_PICKED.branch);
+        if (rooms.length <= 1) return;      // 只有一間就沒什麼好換的
+        sel.innerHTML = rooms.map(r =>
+            '<option value="' + r.id + '"' + (String(r.id) === String(RS_PICKED.classroom_id) ? ' selected' : '') + '>'
+            + esc(r.name) + (String(r.id) === String(RS_PICKED.classroom_id) ? '（原教室）' : '') + '</option>'
+        ).join('');
+    } catch (e) {}
 };
 
 // 以「目前選定日期」所在的那一週為基準，可以往前後翻
@@ -252,6 +278,12 @@ function rsWeekMonday() {
 }
 function ymd(d) {
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+// 目前選定的教室（沒有選單就是原本那間）
+function rsCurrentRoom() {
+    const sel = document.getElementById('rsRoom');
+    return sel ? sel.value : (RS_PICKED ? RS_PICKED.classroom_id : null);
 }
 
 window.rsShiftWeek = function(d) { RS_WEEK_OFF += d; rsLoadWeek(); };
@@ -266,7 +298,7 @@ window.rsLoadWeek = async function() {
             body: JSON.stringify({
                 token: TOKEN, action: 'busyweek',
                 customer: RS_PICKED.customer_id,
-                classroom: RS_PICKED.classroom_id || '',
+                classroom: rsCurrentRoom() || '',
                 from: ymd(mon), to: ymd(sun),
                 exclude: RS_PICKED.id      // 正在調的這一堂不算佔用
             })
@@ -278,6 +310,12 @@ window.rsLoadWeek = async function() {
 };
 
 // 整週網格：一次看到七天的佔用，找空檔不用一天一天切
+function rsRoomLabel() {
+    const sel = document.getElementById('rsRoom');
+    if (sel && sel.selectedIndex >= 0) return sel.options[sel.selectedIndex].text.replace('（原教室）', '');
+    return RS_PICKED && RS_PICKED.classroom_name ? RS_PICKED.classroom_name : '教室';
+}
+
 window.drawRsGrid = function() {
     const box = document.getElementById('rsGrid');
     if (!box || !RS_PICKED) return;
@@ -323,7 +361,7 @@ window.drawRsGrid = function() {
         + '<button class="btn btn-nav" onclick="rsShiftWeek(1)">›</button></div>'
         + '<div class="wg-head">' + head + '</div>'
         + '<div class="wg" style="height:' + H + 'px;">' + hours + '<div class="wg-cols">' + cols + '</div></div>'
-        + '<div class="wg-legend"><i class="wg-mine"></i>我的課　<i class="wg-room"></i>這間教室被別人用　<i class="wg-sel"></i>要改到的時段</div>'
+        + '<div class="wg-legend"><i class="wg-mine"></i>我的課　<i class="wg-room"></i>' + esc(rsRoomLabel()) + '被別人用　<i class="wg-sel"></i>要改到的時段</div>'
         + (clash ? '<div class="tl-clash-msg">⚠️ 這個時段和已排定的課重疊，請改選其他時間</div>' : '')
         + '</div>';
 
@@ -366,7 +404,9 @@ window.doReschedule = async function(classroomId) {
     if (btn) { btn.disabled = true; btn.innerText = '處理中...'; }
     try {
         const payload = { token: TOKEN, lessonId: RS_PICKED.id, newStartTime: startStr, newEndTime: endStr };
-        if (classroomId) payload.classroomId = classroomId;
+        // classroomId 有值代表是從「換教室」清單點進來的；否則用表單上目前選的那間
+        const room = classroomId || rsCurrentRoom();
+        if (room) payload.classroomId = room;
         const res = await fetch(RESCHEDULE_API, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
