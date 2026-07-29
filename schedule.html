@@ -29,8 +29,20 @@
   .loading { text-align:center; color:#999; padding:40px 0; }
   label.f { display:block; font-size:13px; color:#7f8c8d; margin:12px 0 4px; }
   select, input[type=date], input[type=time] { width:100%; padding:10px; font-size:15px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; background:#fff; }
-  .busy { background:#fff8e1; border:1px solid #ffe082; border-radius:6px; padding:8px 10px; font-size:12px; color:#8a6d3b; margin-top:8px; line-height:1.6; }
-  .busy b { color:#a04000; }
+  .tl-wrap { margin-top:10px; background:#fff; border:1px solid #e5e5e5; border-radius:8px; padding:8px 8px 6px; }
+  .tl-head { display:flex; font-size:11px; color:#7f8c8d; margin-left:38px; }
+  .tl-head div { flex:1; text-align:center; }
+  .tl { position:relative; margin-top:4px; }
+  .tl-hour { position:absolute; left:0; right:0; border-top:1px solid #f0f0f0; font-size:10px; color:#bbb; padding-left:2px; box-sizing:border-box; }
+  .tl-lanes { position:absolute; left:38px; right:0; top:0; bottom:0; display:flex; gap:4px; }
+  .tl-lane { position:relative; flex:1; background:#fafafa; border-radius:4px; cursor:pointer; }
+  .tl-block { position:absolute; left:2px; right:2px; border-radius:3px; font-size:10px; overflow:hidden; padding:1px 3px; box-sizing:border-box; line-height:1.2; }
+  .tl-mine { background:#d6eaf8; border:1px solid #a9cce3; color:#21618c; }
+  .tl-room { background:#eceff1; border:1px solid #cfd8dc; color:#78909c; }
+  .tl-sel  { background:rgba(39,174,96,0.30); border:2px dashed #27ae60; color:#1a7a4c; font-weight:bold; z-index:2; }
+  .tl-sel.clash { background:rgba(231,76,60,0.30); border-color:#e74c3c; color:#a93226; }
+  .tl-tip { font-size:11px; color:#95a5a6; margin-top:4px; text-align:center; }
+  .tl-clash-msg { font-size:12px; color:#a93226; background:#fdecea; border:1px solid #f5b7b1; border-radius:5px; padding:5px 8px; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -40,7 +52,7 @@
 <script>
 const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-schedule';
 // ⚠️ 這頁要用自己的 LIFF App ID（每個頁面一個），不能沿用簽到或綁定頁的
-const LIFF_ID = '2010807019-6XGg173m';
+const LIFF_ID = '請填入課表頁專用的 LIFF App ID';
 
 // 調課沿用現有的 teacher-reschedule Edge Function，後端一行都沒改——
 // 規則（團體班排除、教室衝突改選、寫 log）都是已經驗證過的，不重新發明
@@ -198,7 +210,7 @@ window.openReschedule = function(lessonJson) {
     h += '<div class="card"><div class="lesson-info">' + esc(l.student_name) + '　<span class="course">' + esc(l.course_name) + '</span></div>'
        + '<div class="lesson-time">原時間：' + esc(l.start_time.slice(5,10).replace('-','/')) + ' ' + esc(l.start_time.slice(11,16)) + ' ~ ' + esc(l.end_time.slice(11,16)) + '</div></div>';
     h += '<label class="f">新的日期</label><input type="date" id="rsDate" value="' + esc(l.start_time.slice(0,10)) + '" onchange="rsBusy()">';
-    h += '<label class="f">新的開始時間</label><input type="time" id="rsTime" step="300" value="' + esc(l.start_time.slice(11,16)) + '">';
+    h += '<label class="f">新的開始時間</label><input type="time" id="rsTime" step="300" value="' + esc(l.start_time.slice(11,16)) + '" onchange="drawRsTimeline()">';
     h += '<div id="rsBusyBox"></div><div id="rsMsg"></div>';
     h += '<div style="margin-top:18px; display:flex; gap:8px;">'
        + '<button class="btn btn-grey" onclick="backToWeek()">返回</button>'
@@ -219,16 +231,22 @@ window.rsBusy = async function() {
                 token: TOKEN, action: 'busy',
                 customer: RS_PICKED.customer_id,
                 classroom: RS_PICKED.classroom_id || '',
-                date: document.getElementById('rsDate').value
+                date: document.getElementById('rsDate').value,
+                exclude: RS_PICKED.id      // 正在調的這一堂不算佔用，否則會把自己視為衝突
             })
         });
         const data = await res.json();
-        const b = data.busy || { mine: [], room: [] };
-        const fmt = a => a.length ? a.map(x => x.from + '–' + x.to).join('、') : '整天都空著';
-        box.innerHTML = '<div class="busy"><b>您當天的課：</b>' + esc(fmt(b.mine))
-            + (RS_PICKED.classroom_id ? '<br><b>這間教室已被使用：</b>' + esc(fmt(b.room)) : '')
-            + '<br><span style="color:#999;">（含這堂課本身）</span></div>';
+        window._rsBusy = data.busy || { mine: [], room: [] };
+        drawRsTimeline();
     } catch (e) {}
+};
+
+window.drawRsTimeline = function() {
+    const t = document.getElementById('rsTime');
+    if (!t || !window._rsBusy || !RS_PICKED) return;
+    const mins = hm2m(RS_PICKED.end_time.slice(11,16)) - hm2m(RS_PICKED.start_time.slice(11,16));
+    const from = hm2m(t.value || '00:00');
+    renderTimeline('rsBusyBox', window._rsBusy, from, from + mins, 'rsTime');
 };
 
 window.doReschedule = async function(classroomId) {
@@ -332,8 +350,8 @@ window.onStudentChange = async function() {
             + branches.map(b => '<option value="' + esc(b) + '">' + esc(b) + '</option>').join('') + '</select>';
     }
     h += '<label class="f">教室</label><select id="fRoom" onchange="refreshBusy()"><option value="">請選擇</option></select>';
-    h += '<label class="f">開始時間</label><input type="time" id="fTime" step="300" value="16:00" onchange="validate()">';
-    h += '<label class="f">時長（分鐘）</label><select id="fDur" onchange="validate()">'
+    h += '<label class="f">開始時間</label><input type="time" id="fTime" step="300" value="16:00" onchange="drawFormTimeline()">';
+    h += '<label class="f">時長（分鐘）</label><select id="fDur" onchange="drawFormTimeline()">'
         + [30, 45, 60, 75, 90, 120].map(m => '<option value="' + m + '"' + (m === s.template.duration_min ? ' selected' : '') + '>' + m + ' 分鐘</option>').join('')
         + '</select>';
     h += '<div id="fBusy"></div>';
@@ -375,13 +393,84 @@ window.refreshBusy = async function() {
             })
         });
         const data = await res.json();
-        const b = data.busy || { mine: [], room: [] };
-        const fmt = a => a.length ? a.map(x => x.from + '–' + x.to).join('、') : '整天都空著';
-        box.innerHTML = '<div class="busy"><b>您當天的課：</b>' + esc(fmt(b.mine)) + '<br>'
-            + (roomEl && roomEl.value ? '<b>這間教室已被使用：</b>' + esc(fmt(b.room)) : '<b>教室：</b>選擇教室後會顯示忙碌時段')
-            + '</div>';
+        window._busy = data.busy || { mine: [], room: [] };
+        drawFormTimeline();
     } catch (e) {}
 };
+
+// 時間或時長一改就重畫，讓「選的時段」跟著移動——
+// 否則會出現「畫面顯示衝突但其實可以送出」這種比沒提示更糟的狀況
+window.drawFormTimeline = function() {
+    const t = document.getElementById('fTime');
+    const dur = document.getElementById('fDur');
+    if (!t || !window._busy) return;
+    const from = hm2m(t.value || '00:00');
+    const to = from + (parseInt(dur ? dur.value : 60) || 60);
+    renderTimeline('fBusy', window._busy, from, to, 'fTime');
+    validate();
+};
+
+// ---------- 當天時間軸 ----------
+// 用畫的比用寫的清楚：已佔用的區塊和你選的時段疊在同一張圖上，
+// 有沒有撞到一眼就知道，不用讀一串文字自己比對
+const TL_FROM = 7, TL_TO = 22, TL_PX = 30;   // 7:00~22:00，每小時 30px
+function m2px(min) { return (min - TL_FROM * 60) / 60 * TL_PX; }
+function hm2m(hm) { return parseInt(hm.slice(0,2)) * 60 + parseInt(hm.slice(3,5)); }
+function m2hm(m) { return String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0'); }
+function overlaps(aF, aT, bF, bT) { return aF < bT && aT > bF; }
+
+// 回傳是否有衝突，順便把圖畫出來
+function renderTimeline(boxId, busy, selFrom, selTo, onPickId) {
+    const box = document.getElementById(boxId);
+    if (!box) return false;
+    const H = (TL_TO - TL_FROM) * TL_PX;
+    const hasRoom = busy.room && busy.room.length >= 0;
+
+    let clash = false;
+    if (selFrom != null) {
+        (busy.mine || []).forEach(b => { if (overlaps(selFrom, selTo, hm2m(b.from), hm2m(b.to))) clash = true; });
+        (busy.room || []).forEach(b => { if (overlaps(selFrom, selTo, hm2m(b.from), hm2m(b.to))) clash = true; });
+    }
+
+    let hours = '';
+    for (let h = TL_FROM; h <= TL_TO; h++) {
+        hours += '<div class="tl-hour" style="top:' + ((h - TL_FROM) * TL_PX) + 'px;">' + h + ':00</div>';
+    }
+    const blocks = (arr, cls, label) => (arr || []).map(b => {
+        const f = hm2m(b.from), t = hm2m(b.to);
+        return '<div class="tl-block ' + cls + '" style="top:' + m2px(f) + 'px; height:' + Math.max(12, m2px(t) - m2px(f)) + 'px;">'
+            + esc(b.from) + (label && b.room ? ' ' + esc(b.room) : '') + '</div>';
+    }).join('');
+
+    const sel = selFrom != null
+        ? '<div class="tl-block tl-sel' + (clash ? ' clash' : '') + '" style="top:' + m2px(selFrom) + 'px; height:' + Math.max(14, m2px(selTo) - m2px(selFrom)) + 'px;">'
+          + m2hm(selFrom) + '</div>'
+        : '';
+
+    box.innerHTML = '<div class="tl-wrap">'
+        + '<div class="tl-head"><div>我的課</div><div>' + (hasRoom ? '這間教室' : '教室') + '</div></div>'
+        + '<div class="tl" style="height:' + H + 'px;">' + hours
+        + '<div class="tl-lanes">'
+        + '<div class="tl-lane" data-lane="mine">' + blocks(busy.mine, 'tl-mine', true) + sel + '</div>'
+        + '<div class="tl-lane" data-lane="room">' + blocks(busy.room, 'tl-room', false) + '</div>'
+        + '</div></div>'
+        + '<div class="tl-tip">點時間軸可以直接選時間</div>'
+        + (clash ? '<div class="tl-clash-msg">⚠️ 這個時段和已排定的課重疊，請改選其他時間</div>' : '')
+        + '</div>';
+
+    if (onPickId) {
+        box.querySelectorAll('.tl-lane').forEach(function(lane) {
+            lane.onclick = function(ev) {
+                const y = ev.clientY - lane.getBoundingClientRect().top;
+                let mins = TL_FROM * 60 + Math.round((y / TL_PX) * 60 / 15) * 15;   // 對齊到 15 分鐘
+                mins = Math.max(TL_FROM * 60, Math.min(TL_TO * 60 - 15, mins));
+                const inp = document.getElementById(onPickId);
+                if (inp) { inp.value = m2hm(mins); inp.dispatchEvent(new Event('change')); }
+            };
+        });
+    }
+    return clash;
+}
 
 function validate() {
     const btn = document.getElementById('fSubmit');
