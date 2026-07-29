@@ -36,6 +36,8 @@ const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-bindi
 //    請到 LINE Developers 新增一個 LIFF App（endpoint 指向這頁的網址），把 ID 填在這裡。
 const LIFF_ID = '請填入綁定頁專用的 LIFF ID';
 let TOKEN = null;
+let LIFF_READY = false;      // liff.init() 是否成功
+let LIFF_INIT_ERROR = '';    // 失敗原因，顯示在畫面上方便排查
 
 // 從網址取出 token。LIFF 開啟時，參數有時會先包在 liff.state 裡，兩種情況都要處理
 function getTokenFromUrl() {
@@ -131,8 +133,21 @@ async function submitBind(code) {
 function openScanner() {
     const resultEl = document.getElementById('scanResult');
 
-    if (!window.liff || !liff.isApiAvailable || !liff.isApiAvailable('scanCodeV2')) {
-        resultEl.innerText = '目前環境無法使用掃描功能，請從 LINE 裡開啟這個頁面。';
+    // 把三種失敗情況分開，否則全部顯示同一句話，根本查不出原因
+    if (!window.liff) {
+        resultEl.innerText = '⚠️ LIFF SDK 沒有載入成功（網路問題或被擋）。';
+        return;
+    }
+    if (!LIFF_READY) {
+        resultEl.innerText = '⚠️ LIFF 初始化失敗，多半是這頁的 LIFF_ID 填錯或沒填。\n' + LIFF_INIT_ERROR;
+        return;
+    }
+    if (!liff.isInClient()) {
+        resultEl.innerText = '⚠️ 目前不是在 LINE 內開啟，掃碼功能只能在 LINE 裡使用。';
+        return;
+    }
+    if (!liff.isApiAvailable || !liff.isApiAvailable('scanCodeV2')) {
+        resultEl.innerText = '⚠️ 這個 LIFF App 沒有開放掃碼。請確認 LINE Developers 裡「Scan QR」已開啟、且 Size 設為 Full，改完要完全關閉頁面再重開。';
         return;
     }
 
@@ -158,8 +173,11 @@ function openScanner() {
 async function boot() {
     try {
         await liff.init({ liffId: LIFF_ID });
+        LIFF_READY = true;
     } catch (e) {
-        // 在一般瀏覽器（非 LINE）開啟時 liff 初始化可能失敗，此時看得到清單但不能掃碼
+        // 在一般瀏覽器（非 LINE）開啟時初始化失敗是正常的，此時看得到清單但不能掃碼；
+        // 但如果是在 LINE 裡也失敗，幾乎都是 LIFF_ID 填錯
+        LIFF_INIT_ERROR = (e && e.message) ? e.message : String(e);
         console.error('LIFF 初始化失敗', e);
     }
     TOKEN = getTokenFromUrl();
