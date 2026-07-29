@@ -40,7 +40,7 @@
 <script>
 const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-schedule';
 // ⚠️ 這頁要用自己的 LIFF App ID（每個頁面一個），不能沿用簽到或綁定頁的
-const LIFF_ID = '2010807019-6XGg173m';
+const LIFF_ID = '請填入課表頁專用的 LIFF App ID';
 
 let TOKEN = null;
 let WEEK = 0;
@@ -113,7 +113,8 @@ function renderWeek(data) {
                 + '</div>';
         });
     }
-    html += '<button class="fab" onclick="openForm()">＋ 排課</button>';
+    // 教室沒開放自主排課時，這頁就只是課表，不顯示排課按鈕
+    if (data.canSchedule) html += '<button class="fab" onclick="openForm()">＋ 排課</button>';
     document.getElementById('app').innerHTML = html;
 }
 
