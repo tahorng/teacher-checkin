@@ -43,6 +43,23 @@
   .tl-sel.clash { background:rgba(231,76,60,0.30); border-color:#e74c3c; color:#a93226; }
   .tl-tip { font-size:11px; color:#95a5a6; margin-top:4px; text-align:center; }
   .tl-clash-msg { font-size:12px; color:#a93226; background:#fdecea; border:1px solid #f5b7b1; border-radius:5px; padding:5px 8px; margin-top:6px; }
+  .wg-wrap { margin-top:10px; background:#fff; border:1px solid #e5e5e5; border-radius:8px; padding:8px 6px 6px; }
+  .wg-nav { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#7f8c8d; margin-bottom:6px; }
+  .wg-head { display:flex; margin-left:30px; }
+  .wg-head div { flex:1; text-align:center; font-size:11px; color:#7f8c8d; padding-bottom:3px; }
+  .wg-head div.today { color:#e67e22; font-weight:bold; }
+  .wg { position:relative; }
+  .wg-hour { position:absolute; left:0; right:0; border-top:1px solid #f2f2f2; font-size:9px; color:#c0c0c0; box-sizing:border-box; }
+  .wg-cols { position:absolute; left:30px; right:0; top:0; bottom:0; display:flex; gap:2px; }
+  .wg-col { position:relative; flex:1; background:#fbfbfb; border-radius:3px; cursor:pointer; }
+  .wg-col.past { background:#f5f5f5; cursor:not-allowed; }
+  .wg-b { position:absolute; left:1px; right:1px; border-radius:2px; }
+  .wg-mine { background:#aed6f1; border:1px solid #85c1e9; }
+  .wg-room { background:repeating-linear-gradient(45deg,#e8e8e8,#e8e8e8 3px,#d5d5d5 3px,#d5d5d5 6px); border:1px solid #d5d5d5; }
+  .wg-sel { background:rgba(39,174,96,0.45); border:2px solid #27ae60; z-index:3; }
+  .wg-sel.clash { background:rgba(231,76,60,0.45); border-color:#e74c3c; }
+  .wg-legend { font-size:11px; color:#95a5a6; margin-top:5px; text-align:center; line-height:1.6; }
+  .wg-legend i { display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:-1px; margin-right:2px; }
 </style>
 </head>
 <body>
@@ -52,7 +69,7 @@
 <script>
 const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-schedule';
 // ⚠️ 這頁要用自己的 LIFF App ID（每個頁面一個），不能沿用簽到或綁定頁的
-const LIFF_ID = '請填入課表頁專用的 LIFF App ID';
+const LIFF_ID = '2010807019-6XGg173m';
 
 // 調課沿用現有的 teacher-reschedule Edge Function，後端一行都沒改——
 // 規則（團體班排除、教室衝突改選、寫 log）都是已經驗證過的，不重新發明
@@ -64,6 +81,7 @@ let RS_IDS = {};          // 可調課的 lesson id -> true
 let RS_LOADED = false;
 let RS_PICKED = null;     // 目前正在調的那堂課
 let RS_PENDING = null;    // 教室衝突後重送用，時間沿用第一次的選擇
+let RS_WEEK_OFF = 0;      // 調課網格目前顯示第幾週（相對選定日期那週）
 let VIEW = 'week';        // 'week' | 'form'
 let STUDENTS = [];
 let ROOMS = [];
@@ -205,48 +223,121 @@ window.backToWeek = function() { VIEW = 'week'; RS_PICKED = null; RS_PENDING = n
 window.openReschedule = function(lessonJson) {
     RS_PICKED = JSON.parse(lessonJson);
     RS_PENDING = null;
+    RS_WEEK_OFF = 0;
     const l = RS_PICKED;
     let h = '<h2>🗓️ 調整上課時間</h2>';
     h += '<div class="card"><div class="lesson-info">' + esc(l.student_name) + '　<span class="course">' + esc(l.course_name) + '</span></div>'
        + '<div class="lesson-time">原時間：' + esc(l.start_time.slice(5,10).replace('-','/')) + ' ' + esc(l.start_time.slice(11,16)) + ' ~ ' + esc(l.end_time.slice(11,16)) + '</div></div>';
-    h += '<label class="f">新的日期</label><input type="date" id="rsDate" value="' + esc(l.start_time.slice(0,10)) + '" onchange="rsBusy()">';
-    h += '<label class="f">新的開始時間</label><input type="time" id="rsTime" step="300" value="' + esc(l.start_time.slice(11,16)) + '" onchange="drawRsTimeline()">';
-    h += '<div id="rsBusyBox"></div><div id="rsMsg"></div>';
+    h += '<p class="sub" style="margin:10px 0 0;">在網格空白處點一下，就會選好那天那個時間</p>';
+    h += '<div id="rsGrid"></div>';
+    h += '<div style="display:flex; gap:8px; align-items:flex-end;">'
+       + '<div style="flex:1;"><label class="f">日期</label><input type="date" id="rsDate" value="' + esc(l.start_time.slice(0,10)) + '" onchange="rsOnDateChange()"></div>'
+       + '<div style="flex:1;"><label class="f">開始</label><input type="time" id="rsTime" step="300" value="' + esc(l.start_time.slice(11,16)) + '" onchange="drawRsGrid()"></div>'
+       + '</div>';
+    h += '<div id="rsMsg"></div>';
     h += '<div style="margin-top:18px; display:flex; gap:8px;">'
        + '<button class="btn btn-grey" onclick="backToWeek()">返回</button>'
        + '<button class="btn btn-primary" id="rsSubmit" style="flex:1;" onclick="doReschedule()">確認調整</button>'
        + '</div>';
     document.getElementById('app').innerHTML = h;
-    rsBusy();
+    rsLoadWeek();
 };
 
-// 顯示當天忙碌時段——這是原本調課頁沒有的，老師以前只能憑印象挑時間
-window.rsBusy = async function() {
-    const box = document.getElementById('rsBusyBox');
-    if (!box || !RS_PICKED) return;
+// 以「目前選定日期」所在的那一週為基準，可以往前後翻
+function rsWeekMonday() {
+    const base = new Date(document.getElementById('rsDate').value + 'T00:00:00');
+    const dow = base.getDay();
+    base.setDate(base.getDate() - (dow === 0 ? 6 : dow - 1) + RS_WEEK_OFF * 7);
+    return base;
+}
+function ymd(d) {
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+window.rsShiftWeek = function(d) { RS_WEEK_OFF += d; rsLoadWeek(); };
+window.rsOnDateChange = function() { RS_WEEK_OFF = 0; rsLoadWeek(); };
+
+window.rsLoadWeek = async function() {
+    const mon = rsWeekMonday();
+    const sun = new Date(mon); sun.setDate(sun.getDate() + 6);
     try {
         const res = await fetch(API, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                token: TOKEN, action: 'busy',
+                token: TOKEN, action: 'busyweek',
                 customer: RS_PICKED.customer_id,
                 classroom: RS_PICKED.classroom_id || '',
-                date: document.getElementById('rsDate').value,
-                exclude: RS_PICKED.id      // 正在調的這一堂不算佔用，否則會把自己視為衝突
+                from: ymd(mon), to: ymd(sun),
+                exclude: RS_PICKED.id      // 正在調的這一堂不算佔用
             })
         });
         const data = await res.json();
-        window._rsBusy = data.busy || { mine: [], room: [] };
-        drawRsTimeline();
-    } catch (e) {}
+        window._rsDays = data.days || {};
+    } catch (e) { window._rsDays = {}; }
+    drawRsGrid();
 };
 
-window.drawRsTimeline = function() {
-    const t = document.getElementById('rsTime');
-    if (!t || !window._rsBusy || !RS_PICKED) return;
-    const mins = hm2m(RS_PICKED.end_time.slice(11,16)) - hm2m(RS_PICKED.start_time.slice(11,16));
-    const from = hm2m(t.value || '00:00');
-    renderTimeline('rsBusyBox', window._rsBusy, from, from + mins, 'rsTime');
+// 整週網格：一次看到七天的佔用，找空檔不用一天一天切
+window.drawRsGrid = function() {
+    const box = document.getElementById('rsGrid');
+    if (!box || !RS_PICKED) return;
+    const F = 7, T = 22, PX = 28;
+    const H = (T - F) * PX;
+    const days = window._rsDays || {};
+    const mon = rsWeekMonday();
+    const todayStr = ymd(new Date());
+    const selDate = document.getElementById('rsDate').value;
+    const selFrom = hm2m(document.getElementById('rsTime').value || '00:00');
+    const dur = hm2m(RS_PICKED.end_time.slice(11,16)) - hm2m(RS_PICKED.start_time.slice(11,16));
+    const selTo = selFrom + dur;
+    const px = m => (m - F * 60) / 60 * PX;
+
+    let clash = false;
+    let head = '', cols = '', hours = '';
+    for (let h = F; h <= T; h++) hours += '<div class="wg-hour" style="top:' + ((h-F)*PX) + 'px;">' + h + '</div>';
+
+    for (let i = 0; i < 7; i++) {
+        const d = new Date(mon); d.setDate(d.getDate() + i);
+        const ds = ymd(d);
+        head += '<div class="' + (ds === todayStr ? 'today' : '') + '">' + DAYS[d.getDay()] + '<br>' + (d.getMonth()+1) + '/' + d.getDate() + '</div>';
+
+        const info = days[ds] || { mine: [], room: [] };
+        let blocks = (info.room || []).map(b =>
+            '<div class="wg-b wg-room" style="top:' + px(hm2m(b.from)) + 'px; height:' + Math.max(8, px(hm2m(b.to)) - px(hm2m(b.from))) + 'px;"></div>').join('');
+        blocks += (info.mine || []).map(b =>
+            '<div class="wg-b wg-mine" style="top:' + px(hm2m(b.from)) + 'px; height:' + Math.max(8, px(hm2m(b.to)) - px(hm2m(b.from))) + 'px;"></div>').join('');
+
+        if (ds === selDate) {
+            let c = false;
+            (info.mine || []).concat(info.room || []).forEach(b => { if (overlaps(selFrom, selTo, hm2m(b.from), hm2m(b.to))) c = true; });
+            clash = c;
+            blocks += '<div class="wg-b wg-sel' + (c ? ' clash' : '') + '" style="top:' + px(selFrom) + 'px; height:' + Math.max(10, px(selTo) - px(selFrom)) + 'px;"></div>';
+        }
+        const past = ds < todayStr;
+        cols += '<div class="wg-col' + (past ? ' past' : '') + '" data-date="' + ds + '">' + blocks + '</div>';
+    }
+
+    box.innerHTML = '<div class="wg-wrap">'
+        + '<div class="wg-nav"><button class="btn btn-nav" onclick="rsShiftWeek(-1)">‹</button>'
+        + '<span>' + (mon.getMonth()+1) + '/' + mon.getDate() + ' 這週</span>'
+        + '<button class="btn btn-nav" onclick="rsShiftWeek(1)">›</button></div>'
+        + '<div class="wg-head">' + head + '</div>'
+        + '<div class="wg" style="height:' + H + 'px;">' + hours + '<div class="wg-cols">' + cols + '</div></div>'
+        + '<div class="wg-legend"><i class="wg-mine"></i>我的課　<i class="wg-room"></i>這間教室被別人用　<i class="wg-sel"></i>要改到的時段</div>'
+        + (clash ? '<div class="tl-clash-msg">⚠️ 這個時段和已排定的課重疊，請改選其他時間</div>' : '')
+        + '</div>';
+
+    box.querySelectorAll('.wg-col').forEach(function(col) {
+        if (col.classList.contains('past')) return;
+        col.onclick = function(ev) {
+            const y = ev.clientY - col.getBoundingClientRect().top;
+            let m = F * 60 + Math.round((y / PX) * 60 / 15) * 15;      // 對齊 15 分鐘
+            m = Math.max(F * 60, Math.min(T * 60 - dur, m));
+            document.getElementById('rsDate').value = col.dataset.date;
+            document.getElementById('rsTime').value = m2hm(m);
+            drawRsGrid();
+        };
+    });
 };
 
 window.doReschedule = async function(classroomId) {
