@@ -40,10 +40,18 @@
 <script>
 const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-schedule';
 // ⚠️ 這頁要用自己的 LIFF App ID（每個頁面一個），不能沿用簽到或綁定頁的
-const LIFF_ID = '請填入課表頁專用的 LIFF App ID';
+const LIFF_ID = '2010807019-6XGg173m';
+
+// 調課沿用現有的 teacher-reschedule Edge Function，後端一行都沒改——
+// 規則（團體班排除、教室衝突改選、寫 log）都是已經驗證過的，不重新發明
+const RESCHEDULE_API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-reschedule';
 
 let TOKEN = null;
 let WEEK = 0;
+let RS_IDS = {};          // 可調課的 lesson id -> true
+let RS_LOADED = false;
+let RS_PICKED = null;     // 目前正在調的那堂課
+let RS_PENDING = null;    // 教室衝突後重送用，時間沿用第一次的選擇
 let VIEW = 'week';        // 'week' | 'form'
 let STUDENTS = [];
 let ROOMS = [];
@@ -79,9 +87,24 @@ function dayLabel(iso) {
 }
 
 // ---------- 課表 ----------
+// 哪些課可以自行調整，以現有調課 API 的判斷為準（未來 60 天、非團體班、學校有開放）
+async function loadReschedulable() {
+    if (RS_LOADED) return;
+    try {
+        const res = await fetch(RESCHEDULE_API + '?token=' + encodeURIComponent(TOKEN));
+        const data = await res.json();
+        RS_IDS = {};
+        if (data.success && data.enabled !== false) {
+            (data.lessons || []).forEach(function(l) { RS_IDS[l.id] = true; });
+        }
+    } catch (e) { RS_IDS = {}; }
+    RS_LOADED = true;
+}
+
 async function loadWeek() {
     document.getElementById('app').innerHTML = '<p class="loading">載入中...</p>';
     try {
+        await loadReschedulable();
         const res = await fetch(API + '?token=' + encodeURIComponent(TOKEN) + '&week=' + WEEK);
         const data = await res.json();
         if (!data.success) { showError('連結已失效', data.message || '請回到 LINE 重新開啟。'); return; }
@@ -106,10 +129,15 @@ function renderWeek(data) {
             const day = l.start_time.slice(0, 10);
             if (day !== lastDay) { html += '<div class="day-head">' + dayLabel(l.start_time) + '</div>'; lastDay = day; }
             const where = [l.school_name, l.classroom_name].filter(Boolean).join(' · ');
+            // 只有這堂課本身可調整時才出現按鈕；不可調的課就純顯示
+            const rsBtn = RS_IDS[l.id]
+                ? '<button class="btn btn-nav" style="margin-top:8px;" onclick=\'openReschedule(' + JSON.stringify(JSON.stringify(l)) + ')\'>🗓️ 調整時間</button>'
+                : '';
             html += '<div class="card">'
                 + (where ? '<div class="school-tag">' + esc(where) + '</div>' : '')
                 + '<div class="lesson-time">' + esc(l.start_time.slice(11,16)) + ' ~ ' + esc(l.end_time.slice(11,16)) + '</div>'
                 + '<div class="lesson-info">' + esc(l.student_name) + '　<span class="course">' + esc(l.course_name) + '</span></div>'
+                + rsBtn
                 + '</div>';
         });
     }
@@ -159,7 +187,114 @@ function renderForm() {
     document.getElementById('app').innerHTML = html;
 }
 
-window.backToWeek = function() { VIEW = 'week'; loadWeek(); };
+window.backToWeek = function() { VIEW = 'week'; RS_PICKED = null; RS_PENDING = null; loadWeek(); };
+
+// ---------- 調課 ----------
+window.openReschedule = function(lessonJson) {
+    RS_PICKED = JSON.parse(lessonJson);
+    RS_PENDING = null;
+    const l = RS_PICKED;
+    let h = '<h2>🗓️ 調整上課時間</h2>';
+    h += '<div class="card"><div class="lesson-info">' + esc(l.student_name) + '　<span class="course">' + esc(l.course_name) + '</span></div>'
+       + '<div class="lesson-time">原時間：' + esc(l.start_time.slice(5,10).replace('-','/')) + ' ' + esc(l.start_time.slice(11,16)) + ' ~ ' + esc(l.end_time.slice(11,16)) + '</div></div>';
+    h += '<label class="f">新的日期</label><input type="date" id="rsDate" value="' + esc(l.start_time.slice(0,10)) + '" onchange="rsBusy()">';
+    h += '<label class="f">新的開始時間</label><input type="time" id="rsTime" step="300" value="' + esc(l.start_time.slice(11,16)) + '">';
+    h += '<div id="rsBusyBox"></div><div id="rsMsg"></div>';
+    h += '<div style="margin-top:18px; display:flex; gap:8px;">'
+       + '<button class="btn btn-grey" onclick="backToWeek()">返回</button>'
+       + '<button class="btn btn-primary" id="rsSubmit" style="flex:1;" onclick="doReschedule()">確認調整</button>'
+       + '</div>';
+    document.getElementById('app').innerHTML = h;
+    rsBusy();
+};
+
+// 顯示當天忙碌時段——這是原本調課頁沒有的，老師以前只能憑印象挑時間
+window.rsBusy = async function() {
+    const box = document.getElementById('rsBusyBox');
+    if (!box || !RS_PICKED) return;
+    try {
+        const res = await fetch(API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                token: TOKEN, action: 'busy',
+                customer: RS_PICKED.customer_id,
+                classroom: RS_PICKED.classroom_id || '',
+                date: document.getElementById('rsDate').value
+            })
+        });
+        const data = await res.json();
+        const b = data.busy || { mine: [], room: [] };
+        const fmt = a => a.length ? a.map(x => x.from + '–' + x.to).join('、') : '整天都空著';
+        box.innerHTML = '<div class="busy"><b>您當天的課：</b>' + esc(fmt(b.mine))
+            + (RS_PICKED.classroom_id ? '<br><b>這間教室已被使用：</b>' + esc(fmt(b.room)) : '')
+            + '<br><span style="color:#999;">（含這堂課本身）</span></div>';
+    } catch (e) {}
+};
+
+window.doReschedule = async function(classroomId) {
+    const btn = document.getElementById('rsSubmit');
+    const msg = document.getElementById('rsMsg');
+    let startStr, endStr;
+
+    if (RS_PENDING) {
+        // 教室衝突後改選教室重送，時間沿用第一次的選擇，不用重挑
+        startStr = RS_PENDING.start; endStr = RS_PENDING.end;
+    } else {
+        const d = document.getElementById('rsDate').value;
+        const t = document.getElementById('rsTime').value;
+        if (!d || !t) { if (msg) msg.innerHTML = '<div class="msg error">請選擇新的日期與時間</div>'; return; }
+        // 時長沿用原本這堂課的長度
+        const mins = (parseInt(RS_PICKED.end_time.slice(11,13)) * 60 + parseInt(RS_PICKED.end_time.slice(14,16)))
+                   - (parseInt(RS_PICKED.start_time.slice(11,13)) * 60 + parseInt(RS_PICKED.start_time.slice(14,16)));
+        const total = parseInt(t.slice(0,2)) * 60 + parseInt(t.slice(3,5)) + mins;
+        if (total >= 24 * 60) { if (msg) msg.innerHTML = '<div class="msg error">課程時間不能跨到隔天</div>'; return; }
+        // 後端要的是不帶時區的本地時間字串，一律字串組合，不經過 Date 物件
+        startStr = d + 'T' + t + ':00';
+        endStr = d + 'T' + String(Math.floor(total/60)).padStart(2,'0') + ':' + String(total%60).padStart(2,'0') + ':00';
+        RS_PENDING = { start: startStr, end: endStr };
+    }
+
+    if (btn) { btn.disabled = true; btn.innerText = '處理中...'; }
+    try {
+        const payload = { token: TOKEN, lessonId: RS_PICKED.id, newStartTime: startStr, newEndTime: endStr };
+        if (classroomId) payload.classroomId = classroomId;
+        const res = await fetch(RESCHEDULE_API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            if (data.needsClassroomChoice) { rsClassroomChoice(data.message, data.alternativeClassrooms || []); return; }
+            if (msg) msg.innerHTML = '<div class="msg error">' + esc(data.message || '調整失敗，請稍後再試。') + '</div>';
+            if (btn) { btn.disabled = false; btn.innerText = '確認調整'; }
+            RS_PENDING = null;
+            return;
+        }
+        PENDING_MSG = 'ok:✅ 調課成功！';
+        RS_LOADED = false;   // 課程時間變了，可調清單要重抓
+        VIEW = 'week'; RS_PICKED = null; RS_PENDING = null;
+        loadWeek();
+    } catch (e) {
+        if (msg) msg.innerHTML = '<div class="msg error">網路連線異常，請稍後再試。</div>';
+        if (btn) { btn.disabled = false; btn.innerText = '確認調整'; }
+    }
+};
+
+function rsClassroomChoice(message, alternatives) {
+    let h = '<h2>🗓️ 調整上課時間</h2><div class="msg error">' + esc(message) + '</div>';
+    if (alternatives.length === 0) {
+        h += '<p class="sub">請返回重新選擇別的時間。</p>';
+    } else {
+        h += '<p class="sub">選擇要換到哪間教室：</p>';
+        alternatives.forEach(function(room) {
+            h += '<button class="btn btn-primary" style="display:block; width:100%; margin-bottom:8px;" onclick="doReschedule(' + room.id + ')">' + esc(room.name) + '</button>';
+        });
+    }
+    h += '<div id="rsMsg"></div>';
+    h += '<button class="btn btn-grey" style="margin-top:10px;" onclick="backToWeek()">返回課表</button>';
+    document.getElementById('app').innerHTML = h;
+}
 
 window.onStudentChange = async function() {
     const idx = document.getElementById('fStudent').value;
