@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的課表</title>
+<style>
+  body { font-family: -apple-system, "Microsoft JhengHei", sans-serif; background:#f4f6f8; margin:0; padding:16px 16px 90px; color:#2c3e50; }
+  h2 { margin: 8px 0 4px; font-size:19px; }
+  .sub { color:#7f8c8d; font-size:13px; margin-bottom:14px; }
+  .card { background:#fff; border-radius:10px; padding:12px 14px; margin-bottom:8px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  .school-tag { font-size:12px; color:#3498db; font-weight:bold; }
+  .day-head { font-size:13px; font-weight:bold; color:#7f8c8d; margin:16px 0 6px; border-bottom:1px solid #e0e0e0; padding-bottom:4px; }
+  .lesson-time { font-size:13px; color:#7f8c8d; }
+  .lesson-info { font-size:16px; margin:3px 0 0; font-weight:bold; }
+  .lesson-info .course { font-size:13px; color:#7f8c8d; font-weight:normal; }
+  .btn { display:inline-block; padding:9px 16px; border-radius:6px; font-weight:bold; color:#fff; border:none; font-size:14px; cursor:pointer; }
+  .btn-nav { background:#fff; color:#3498db; border:1px solid #cfe3f5; padding:6px 12px; font-size:13px; }
+  .btn-nav:disabled { color:#bbb; border-color:#eee; }
+  .btn-primary { background:#3498db; }
+  .btn-grey { background:#95a5a6; }
+  .weekbar { display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:12px; }
+  .fab { position:fixed; left:16px; right:16px; bottom:16px; padding:14px; font-size:16px; background:#27ae60; text-align:center; border-radius:8px; color:#fff; font-weight:bold; border:none; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.2); }
+  .empty { text-align:center; color:#bbb; padding:36px 0; }
+  .error-box { text-align:center; padding:60px 20px; color:#c0392b; }
+  .msg { padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
+  .msg.ok { background:#eafaf1; border:1px solid #a3e4c1; color:#1a7a4c; }
+  .msg.error { background:#fdecea; border:1px solid #f5b7b1; color:#a93226; }
+  .loading { text-align:center; color:#999; padding:40px 0; }
+  label.f { display:block; font-size:13px; color:#7f8c8d; margin:12px 0 4px; }
+  select, input[type=date], input[type=time] { width:100%; padding:10px; font-size:15px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; background:#fff; }
+  .busy { background:#fff8e1; border:1px solid #ffe082; border-radius:6px; padding:8px 10px; font-size:12px; color:#8a6d3b; margin-top:8px; line-height:1.6; }
+  .busy b { color:#a04000; }
+</style>
+</head>
+<body>
+<div id="app"><p class="loading">載入中...</p></div>
+
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-schedule';
+// ⚠️ 這頁要用自己的 LIFF App ID（每個頁面一個），不能沿用簽到或綁定頁的
+const LIFF_ID = '請填入課表頁專用的 LIFF App ID';
+
+let TOKEN = null;
+let WEEK = 0;
+let VIEW = 'week';        // 'week' | 'form'
+let STUDENTS = [];
+let ROOMS = [];
+let PENDING_MSG = '';
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+function getTokenFromUrl() {
+    const p = new URLSearchParams(location.search);
+    let t = p.get('token');
+    if (!t && p.get('liff.state')) {
+        const st = new URLSearchParams(p.get('liff.state').replace(/^\?/, ''));
+        t = st.get('token');
+    }
+    return t;
+}
+function showError(title, text) {
+    document.getElementById('app').innerHTML = '<div class="error-box"><h2>' + esc(title) + '</h2><p>' + esc(text) + '</p></div>';
+}
+function msgHtml() {
+    if (!PENDING_MSG) return '';
+    const ok = PENDING_MSG.indexOf('ok:') === 0;
+    const t = PENDING_MSG.replace(/^(ok:|error:)/, '');
+    PENDING_MSG = '';
+    return '<div class="msg ' + (ok ? 'ok' : 'error') + '">' + esc(t) + '</div>';
+}
+const DAYS = ['日','一','二','三','四','五','六'];
+function dayLabel(iso) {
+    const d = iso.slice(0, 10);
+    const dt = new Date(d + 'T00:00:00');
+    return d.slice(5).replace('-', '/') + '（' + DAYS[dt.getDay()] + '）';
+}
+
+// ---------- 課表 ----------
+async function loadWeek() {
+    document.getElementById('app').innerHTML = '<p class="loading">載入中...</p>';
+    try {
+        const res = await fetch(API + '?token=' + encodeURIComponent(TOKEN) + '&week=' + WEEK);
+        const data = await res.json();
+        if (!data.success) { showError('連結已失效', data.message || '請回到 LINE 重新開啟。'); return; }
+        renderWeek(data);
+    } catch (e) { showError('載入失敗', '網路連線異常，請稍後再試。'); }
+}
+
+function renderWeek(data) {
+    let html = msgHtml();
+    html += '<div class="weekbar">'
+        + '<button class="btn btn-nav" onclick="shiftWeek(-1)">‹ 上週</button>'
+        + '<span style="font-size:13px; color:#7f8c8d;">' + esc(data.weekStart.slice(5)) + ' ~ ' + esc(data.weekEnd.slice(5)) + '</span>'
+        + '<button class="btn btn-nav" onclick="shiftWeek(1)">下週 ›</button>'
+        + '</div>';
+    if (WEEK !== 0) html += '<p style="text-align:center; margin:-4px 0 12px;"><button class="btn btn-nav" onclick="gotoWeek(0)">回到本週</button></p>';
+
+    if (!data.lessons || data.lessons.length === 0) {
+        html += '<p class="empty">這一週沒有排課</p>';
+    } else {
+        let lastDay = '';
+        data.lessons.forEach(function(l) {
+            const day = l.start_time.slice(0, 10);
+            if (day !== lastDay) { html += '<div class="day-head">' + dayLabel(l.start_time) + '</div>'; lastDay = day; }
+            const where = [l.school_name, l.classroom_name].filter(Boolean).join(' · ');
+            html += '<div class="card">'
+                + (where ? '<div class="school-tag">' + esc(where) + '</div>' : '')
+                + '<div class="lesson-time">' + esc(l.start_time.slice(11,16)) + ' ~ ' + esc(l.end_time.slice(11,16)) + '</div>'
+                + '<div class="lesson-info">' + esc(l.student_name) + '　<span class="course">' + esc(l.course_name) + '</span></div>'
+                + '</div>';
+        });
+    }
+    html += '<button class="fab" onclick="openForm()">＋ 排課</button>';
+    document.getElementById('app').innerHTML = html;
+}
+
+window.shiftWeek = function(d) { WEEK += d; loadWeek(); };
+window.gotoWeek = function(w) { WEEK = w; loadWeek(); };
+
+// ---------- 排課表單 ----------
+window.openForm = async function() {
+    VIEW = 'form';
+    document.getElementById('app').innerHTML = '<p class="loading">載入學生清單...</p>';
+    try {
+        const res = await fetch(API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: TOKEN, action: 'students' })
+        });
+        const data = await res.json();
+        if (!data.success) { showError('載入失敗', data.message || ''); return; }
+        STUDENTS = data.students || [];
+        renderForm();
+    } catch (e) { showError('載入失敗', '網路連線異常，請稍後再試。'); }
+};
+
+function renderForm() {
+    let html = '<h2>＋ 排課</h2>';
+    if (STUDENTS.length === 0) {
+        html += '<p class="sub">目前沒有可排課的學生。請先在「綁定」頁掃描學生的報到 QR 碼，經教室確認後才能排課。</p>'
+            + '<button class="btn btn-grey" onclick="backToWeek()">返回課表</button>';
+        document.getElementById('app').innerHTML = html;
+        return;
+    }
+    html += '<p class="sub">課程內容與時長會沿用這位學生上一堂課的設定</p>';
+    html += '<label class="f">學生</label><select id="fStudent" onchange="onStudentChange()">'
+        + '<option value="">請選擇</option>'
+        + STUDENTS.map(function(s, i) {
+            return '<option value="' + i + '">' + esc(s.student_name) + (s.school_name ? '（' + esc(s.school_name) + '）' : '') + '</option>';
+        }).join('') + '</select>';
+    html += '<div id="fRest"></div>';
+    html += '<div style="margin-top:18px; display:flex; gap:8px;">'
+        + '<button class="btn btn-grey" onclick="backToWeek()">返回</button>'
+        + '<button class="btn btn-primary" id="fSubmit" style="flex:1;" onclick="submitForm()" disabled>送出</button>'
+        + '</div>';
+    document.getElementById('app').innerHTML = html;
+}
+
+window.backToWeek = function() { VIEW = 'week'; loadWeek(); };
+
+window.onStudentChange = async function() {
+    const idx = document.getElementById('fStudent').value;
+    const rest = document.getElementById('fRest');
+    document.getElementById('fSubmit').disabled = true;
+    if (idx === '') { rest.innerHTML = ''; return; }
+    const s = STUDENTS[idx];
+
+    // 沒有上課紀錄代表這是第一堂，牽涉報名方案與收費，交給教室處理
+    if (!s.template) {
+        rest.innerHTML = '<div class="msg error" style="margin-top:12px;">這位學生還沒有您的上課紀錄，第一堂課請聯繫教室安排。</div>';
+        return;
+    }
+
+    rest.innerHTML = '<p class="loading">載入教室...</p>';
+    try {
+        const res = await fetch(API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: TOKEN, action: 'rooms', customer: s.customer_id })
+        });
+        const data = await res.json();
+        ROOMS = data.rooms || [];
+    } catch (e) { ROOMS = []; }
+
+    const branches = [...new Set(ROOMS.map(r => r.branch).filter(Boolean))];
+    const today = new Date();
+    const iso = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+
+    let h = '<div class="msg ok" style="margin-top:12px;">課程：' + esc(s.template.course_name || '（未命名）')
+        + '　·　' + s.template.duration_min + ' 分鐘</div>';
+    h += '<label class="f">日期</label><input type="date" id="fDate" min="' + iso + '" value="' + iso + '" onchange="refreshBusy()">';
+    if (branches.length > 1) {
+        h += '<label class="f">校區</label><select id="fBranch" onchange="onBranchChange()">'
+            + '<option value="">請選擇</option>'
+            + branches.map(b => '<option value="' + esc(b) + '">' + esc(b) + '</option>').join('') + '</select>';
+    }
+    h += '<label class="f">教室</label><select id="fRoom" onchange="refreshBusy()"><option value="">請選擇</option></select>';
+    h += '<label class="f">開始時間</label><input type="time" id="fTime" step="300" value="16:00" onchange="validate()">';
+    h += '<label class="f">時長（分鐘）</label><select id="fDur" onchange="validate()">'
+        + [30, 45, 60, 75, 90, 120].map(m => '<option value="' + m + '"' + (m === s.template.duration_min ? ' selected' : '') + '>' + m + ' 分鐘</option>').join('')
+        + '</select>';
+    h += '<div id="fBusy"></div>';
+    rest.innerHTML = h;
+
+    fillRooms(branches.length > 1 ? '' : (branches[0] || ''));
+    refreshBusy();
+};
+
+function fillRooms(branch) {
+    const sel = document.getElementById('fRoom');
+    if (!sel) return;
+    const list = branch ? ROOMS.filter(r => r.branch === branch) : ROOMS;
+    sel.innerHTML = '<option value="">請選擇</option>'
+        + list.map(r => '<option value="' + r.id + '">' + esc(r.name) + '</option>').join('');
+}
+
+window.onBranchChange = function() {
+    fillRooms(document.getElementById('fBranch').value);
+    refreshBusy();
+};
+
+window.refreshBusy = async function() {
+    validate();
+    const idx = document.getElementById('fStudent').value;
+    const dateEl = document.getElementById('fDate');
+    const roomEl = document.getElementById('fRoom');
+    const box = document.getElementById('fBusy');
+    if (idx === '' || !dateEl || !box) return;
+    box.innerHTML = '';
+    try {
+        const res = await fetch(API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                token: TOKEN, action: 'busy',
+                customer: STUDENTS[idx].customer_id,
+                classroom: roomEl ? roomEl.value : '',
+                date: dateEl.value
+            })
+        });
+        const data = await res.json();
+        const b = data.busy || { mine: [], room: [] };
+        const fmt = a => a.length ? a.map(x => x.from + '–' + x.to).join('、') : '整天都空著';
+        box.innerHTML = '<div class="busy"><b>您當天的課：</b>' + esc(fmt(b.mine)) + '<br>'
+            + (roomEl && roomEl.value ? '<b>這間教室已被使用：</b>' + esc(fmt(b.room)) : '<b>教室：</b>選擇教室後會顯示忙碌時段')
+            + '</div>';
+    } catch (e) {}
+};
+
+function validate() {
+    const btn = document.getElementById('fSubmit');
+    if (!btn) return;
+    const idx = document.getElementById('fStudent').value;
+    const d = document.getElementById('fDate');
+    const t = document.getElementById('fTime');
+    const r = document.getElementById('fRoom');
+    btn.disabled = !(idx !== '' && d && d.value && t && t.value && r && r.value);
+}
+
+window.submitForm = async function() {
+    const btn = document.getElementById('fSubmit');
+    btn.disabled = true;
+    btn.innerText = '送出中...';
+    const idx = document.getElementById('fStudent').value;
+    try {
+        const res = await fetch(API, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                token: TOKEN, action: 'submit',
+                customer: STUDENTS[idx].customer_id,
+                student: STUDENTS[idx].student_id,
+                classroom: document.getElementById('fRoom').value,
+                date: document.getElementById('fDate').value,
+                time: document.getElementById('fTime').value,
+                duration: document.getElementById('fDur').value
+            })
+        });
+        const data = await res.json();
+        if (!data.success) { showError('操作失敗', data.message || ''); return; }
+        PENDING_MSG = data.actionResult || '';
+        if (PENDING_MSG.indexOf('ok:') === 0) {
+            VIEW = 'week'; WEEK = 0; loadWeek();     // 成功就回課表，順便讓老師看到新排的課
+        } else {
+            renderForm();
+            document.getElementById('app').insertAdjacentHTML('afterbegin', msgHtml());
+        }
+    } catch (e) {
+        showError('送出失敗', '網路連線異常，請稍後再試。');
+    }
+};
+
+async function boot() {
+    try { await liff.init({ liffId: LIFF_ID }); }
+    catch (e) { console.error('LIFF 初始化失敗', e); }   // 這頁不需要掃碼，初始化失敗仍可正常使用
+    TOKEN = getTokenFromUrl();
+    if (!TOKEN) { showError('連結錯誤', '缺少存取憑證，請回到 LINE 重新開啟。'); return; }
+    loadWeek();
+}
+boot();
+</script>
+</body>
+</html>
