@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>學生綁定</title>
+<style>
+  body { font-family: -apple-system, "Microsoft JhengHei", sans-serif; background:#f4f6f8; margin:0; padding:16px; color:#2c3e50; }
+  h2 { margin: 8px 0 4px; }
+  .sub { color:#7f8c8d; font-size:13px; margin-bottom:16px; }
+  .card { background:#fff; border-radius:10px; padding:14px 16px; margin-bottom:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  .school-tag { font-size:12px; color:#3498db; font-weight:bold; }
+  .student-name { font-size:17px; margin:4px 0 0; font-weight:bold; }
+  .btn { display:inline-block; padding:9px 18px; border-radius:6px; text-decoration:none; font-weight:bold; color:#fff; border:none; font-size:14px; cursor:pointer; }
+  .btn-scan { background:#3498db; width:100%; padding:14px 18px; font-size:16px; }
+  .tag { font-size:13px; color:#7f8c8d; margin-right:8px; }
+  .pending-box { background:#fff8e1; border:1px solid #ffe082; color:#8a6d3b; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
+  .empty { text-align:center; color:#bbb; padding:40px 0; }
+  .error-box { text-align:center; padding:60px 20px; color:#c0392b; }
+  .msg { padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; }
+  .msg.ok { background:#eafaf1; border:1px solid #a3e4c1; color:#1a7a4c; }
+  .msg.error { background:#fdecea; border:1px solid #f5b7b1; color:#a93226; }
+  #scanResult { font-size:13px; color:#7f8c8d; margin-top:8px; text-align:center; }
+  .loading { text-align:center; color:#999; padding:40px 0; }
+  .section-title { font-size:13px; color:#7f8c8d; margin:18px 0 8px; }
+</style>
+</head>
+<body>
+<div id="app"><p class="loading">載入中...</p></div>
+<div id="scanResult"></div>
+
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+const API = 'https://btxijcauqsmtdggfcwev.supabase.co/functions/v1/teacher-binding';
+// ⚠️ 這頁要用「自己的」LIFF App ID，不能沿用簽到頁或調課頁的。
+//    請到 LINE Developers 新增一個 LIFF App（endpoint 指向這頁的網址），把 ID 填在這裡。
+const LIFF_ID = '請填入綁定頁專用的 LIFF ID';
+let TOKEN = null;
+
+// 從網址取出 token。LIFF 開啟時，參數有時會先包在 liff.state 裡，兩種情況都要處理
+function getTokenFromUrl() {
+    const p = new URLSearchParams(location.search);
+    let t = p.get('token');
+    if (!t && p.get('liff.state')) {
+        const st = new URLSearchParams(p.get('liff.state').replace(/^\?/, ''));
+        t = st.get('token');
+    }
+    return t;
+}
+
+function showError(title, text) {
+    document.getElementById('app').innerHTML =
+        '<div class="error-box"><h2>' + title + '</h2><p>' + text + '</p></div>';
+}
+
+// 學生姓名一律經過跳脫再塞進 innerHTML，避免姓名裡有特殊字元把版面弄壞
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+    });
+}
+
+function render(data, actionResult) {
+    let html = '<h2>🔗 我的學生綁定</h2>';
+
+    if (actionResult) {
+        const isOk = actionResult.indexOf('ok:') === 0;
+        const text = actionResult.replace(/^(ok:|error:)/, '');
+        html += '<div class="msg ' + (isOk ? 'ok' : 'error') + '">' + esc(text) + '</div>';
+    }
+
+    html += '<p class="sub">掃描學生的報到 QR 碼即可申請綁定，經教室確認後，就能在排課時選到這位學生。</p>';
+    html += '<button class="btn btn-scan" onclick="openScanner()">📷 掃描學生 QR 碼申請綁定</button>';
+
+    if (data.pendingCount > 0) {
+        html += '<div class="pending-box" style="margin-top:14px;">⏳ 有 ' + data.pendingCount + ' 筆申請正在等教室確認中</div>';
+    }
+
+    html += '<div class="section-title">已綁定的學生</div>';
+
+    if (!data.bindings || data.bindings.length === 0) {
+        html += '<p class="empty">目前還沒有已綁定的學生</p>';
+    } else {
+        let lastSchool = null;
+        data.bindings.forEach(function(b) {
+            html += '<div class="card">';
+            if (b.school_name !== lastSchool) {
+                html += '<div class="school-tag">' + esc(b.school_name) + '</div>';
+                lastSchool = b.school_name;
+            }
+            html += '<div class="student-name">' + esc(b.student_name) + '</div>';
+            html += '</div>';
+        });
+    }
+
+    document.getElementById('app').innerHTML = html;
+}
+
+async function refresh(actionResult) {
+    try {
+        const res = await fetch(API + '?token=' + encodeURIComponent(TOKEN));
+        const data = await res.json();
+        if (!data.success) {
+            showError('連結已失效', data.message || '請回到 LINE 重新開啟。');
+            return;
+        }
+        render(data, actionResult);
+    } catch (e) {
+        showError('載入失敗', '網路連線異常，請稍後再試。');
+    }
+}
+
+async function submitBind(code) {
+    try {
+        const res = await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: TOKEN, action: 'bind', code: code })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showError('連結已失效', data.message || '請回到 LINE 重新開啟。');
+            return;
+        }
+        render(data, data.actionResult);
+    } catch (e) {
+        showError('操作失敗', '網路連線異常，請稍後再試。');
+    }
+}
+
+function openScanner() {
+    const resultEl = document.getElementById('scanResult');
+
+    if (!window.liff || !liff.isApiAvailable || !liff.isApiAvailable('scanCodeV2')) {
+        resultEl.innerText = '目前環境無法使用掃描功能，請從 LINE 裡開啟這個頁面。';
+        return;
+    }
+
+    resultEl.innerText = '請對準學生的 QR 碼...';
+    liff.scanCodeV2().then(function(result) {
+        const value = result && result.value;
+        if (!value) {
+            resultEl.innerText = '沒有掃描到內容，請再試一次。';
+            return;
+        }
+        // 格式檢查只在前端做初步過濾，實際辨識與驗證一律以後端為準
+        if (!/^DH-CKIN-\d+$/.test(value)) {
+            resultEl.innerText = '⚠️ 掃到的不是有效的報到 QR 碼。';
+            return;
+        }
+        resultEl.innerText = '';
+        submitBind(value);
+    }).catch(function(err) {
+        resultEl.innerText = '掃描已取消或發生錯誤：' + (err && err.message ? err.message : '');
+    });
+}
+
+async function boot() {
+    try {
+        await liff.init({ liffId: LIFF_ID });
+    } catch (e) {
+        // 在一般瀏覽器（非 LINE）開啟時 liff 初始化可能失敗，此時看得到清單但不能掃碼
+        console.error('LIFF 初始化失敗', e);
+    }
+    TOKEN = getTokenFromUrl();
+    if (!TOKEN) {
+        showError('連結錯誤', '缺少存取憑證，請回到 LINE 重新開啟。');
+        return;
+    }
+    refresh();
+}
+
+boot();
+</script>
+</body>
+</html>
